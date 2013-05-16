@@ -1,0 +1,72 @@
+# Makefile
+ 
+PACKAGE_NAME = @PACKAGE_NAME@
+PACKAGE_VERSION = @PACKAGE_VERSION@
+
+srcdir = @srcdir@
+abs_srcdir = @abs_srcdir@
+abs_builddir = @abs_builddir@
+prefix = @prefix@
+exec_prefix = @exec_prefix@
+sbindir = @sbindir@
+includedir = @includedir@
+
+KERNEL_DIR = @KERNEL_DIR@
+KERNEL_VERSION = @KERNEL_VERSION@
+
+@SET_MAKE@
+SHELL = @SHELL@
+INSTALL = @INSTALL@
+INSTALL_PROGRAM = @INSTALL_PROGRAM@
+INSTALL_DATA = @INSTALL_DATA@
+INSTALL_MODULE = $(INSTALL_DATA)
+INSTALL_HEADER = $(INSTALL_DATA)
+MKDIR_P = @MKDIR_P@
+CC = @CC@
+CPPFLAGS = @CPPFLAGS@
+CFLAGS = @CFLAGS@ @DEFS@ -I"$(abs_srcdir)" -Wall
+
+KERNEL_CFLAGS := -DNF_TBF_VERSION='\"$(PACKAGE_VERSION)\"'
+KERNEL_CFLAGS := $(KERNEL_CFLAGS) -I"$(abs_srcdir)" -Wall
+
+.PHONY: all
+all: modules utils
+
+.PHONY: modules
+modules: $(srcdir)/nf_tbf.c
+	make -C $(KERNEL_DIR) M="$(abs_builddir)" V=1 \
+	  EXTRA_CFLAGS="$(KERNEL_CFLAGS)" modules
+
+nf_tbf_ctl.o: $(srcdir)/nf_tbf_ctl.c $(srcdir)/nf_tbf.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+nf_tbf_ctl: nf_tbf_ctl.o
+	$(CC) $(LDFLAGS) -o $@ $<
+
+.PHONY: utils
+utils: nf_tbf_ctl
+
+.PHONY: install-modules
+install-modules: modules
+	$(MKDIR_P) "$(DESTDIR)/lib/modules/$(KERNEL_VERSION)/extra"
+	$(INSTALL_MODULE) nf_tbf.ko \
+	  "$(DESTDIR)/lib/modules/$(KERNEL_VERSION)/extra/nf_tbf.ko"
+
+.PHONY: install-utils
+install-utils: utils
+	$(MKDIR_P) "$(DESTDIR)$(sbindir)"
+	$(INSTALL_PROGRAM) nf_tbf_ctl "$(DESTDIR)$(sbindir)/nf_tbf_ctl"
+
+.PHONY: install-headers
+install-headers: $(srcdir)/nf_tbf.h
+	$(MKDIR_P) "$(DESTDIR)$(includedir)"
+	$(INSTALL_HEADER) "$(srcdir)/nf_tbf.h" "$(DESTDIR)$(includedir)/nf_tbf.h"
+
+.PHONY: install
+install: install-modules install-utils install-headers
+
+.PHONY: clean
+clean:
+	$(MAKE) -C $(KERNEL_DIR) M="$(abs_builddir)" clean
+	rm -f nf_tbf_ctl.o nf_tbf_ctl Module.markers Module.symvers
+

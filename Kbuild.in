@@ -1,0 +1,5 @@
+# Makefile for the kernel.
+
+src = @abs_srcdir@
+obj-m = nf_tbf.o
+

@@ -38,8 +38,10 @@ struct nf_tbf_cfg {
 
 struct nf_tbf_stats {
 	NF_TBF_U64_T first_pkt_ts;
-	NF_TBF_U64_T pkts_accepted;
-	NF_TBF_U64_T bytes_accepted;
+	NF_TBF_U64_T pkts_bursted;
+	NF_TBF_U64_T bytes_bursted;
+	NF_TBF_U64_T pkts_queued;
+	NF_TBF_U64_T bytes_queued;
 	NF_TBF_U64_T pkts_dropped;
 	NF_TBF_U64_T bytes_dropped;
 	NF_TBF_U64_T pkts_nomem;

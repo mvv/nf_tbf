@@ -179,10 +179,6 @@ static s64 nf_tbf_bucket_burst(struct nf_tbf_bucket *bucket, s64 now,
 	if (tokens >= 0) {
 		bucket->last_pkt_ts = now;
 		bucket->tokens_left = tokens;
-		if (bucket->stats.first_pkt_ts == 0)
-			bucket->stats.first_pkt_ts = get_seconds();
-		bucket->stats.pkts_accepted += 1;
-		bucket->stats.bytes_accepted += size;
 		return 0;
 	}
 
@@ -258,6 +254,10 @@ static int nf_tbf_handle(struct nf_queue_entry *entry, unsigned int qn)
 		ns = nf_tbf_bucket_burst(bucket, now, entry, size);
 
 		if (ns == 0) {
+			if (bucket->stats.first_pkt_ts == 0)
+				bucket->stats.first_pkt_ts = get_seconds();
+			bucket->stats.pkts_bursted += 1;
+			bucket->stats.bytes_bursted += size;
 			spin_unlock_bh(&bucket->lock);
 			nf_tbf_bucket_put(bucket);
 			nf_reinject(entry, NF_ACCEPT);
@@ -288,6 +288,11 @@ static int nf_tbf_handle(struct nf_queue_entry *entry, unsigned int qn)
 		nf_tbf_bucket_put(bucket);
 		return -ENOMEM;
 	}
+
+	if (bucket->stats.first_pkt_ts == 0)
+		bucket->stats.first_pkt_ts = get_seconds();
+	bucket->stats.pkts_queued += 1;
+	bucket->stats.bytes_queued += size;
 
 	bucket_entry->entry = entry;
 	bucket_entry->size = size;

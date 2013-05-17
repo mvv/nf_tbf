@@ -122,8 +122,9 @@ Commands:\n\
           Print counters in human readable format (default).\n\
       -c, --columns[=COUNTERS]\n\
           Print values of counters in COUNTERS separated by spaces.\n\
-          COUNTERS defaults to `first_pkt_ts,pkts_accepted,bytes_accepted,\n\
-          pkts_dropped,bytes_dropped,pkts_nomem,bytes_nomem`.\n",
+          COUNTERS defaults to `first_pkt_ts,pkts_bursted,bytes_bursted,\n\
+          pkts_queued,bytes_queued,pkts_dropped,bytes_dropped,\n\
+          pkts_nomem,bytes_nomem'.\n",
     DEFAULT_CONFIGFS_PATH);
 }
 
@@ -1067,14 +1068,17 @@ Bucket rate: %sBps\n",
       {
         COLUMN_NONE = 0,
         COLUMN_FIRST_PKT_TS = 1,
-        COLUMN_PKTS_ACCEPTED = 2,
-        COLUMN_BYTES_ACCEPTED = 4,
-        COLUMN_PKTS_DROPPED = 8,
-        COLUMN_BYTES_DROPPED = 16,
-        COLUMN_PKTS_NOMEM = 32,
-        COLUMN_BYTES_NOMEM = 64,
+        COLUMN_PKTS_BURSTED = 2,
+        COLUMN_BYTES_BURSTED = 4,
+        COLUMN_PKTS_QUEUED = 8,
+        COLUMN_BYTES_QUEUED = 16,
+        COLUMN_PKTS_DROPPED = 32,
+        COLUMN_BYTES_DROPPED = 64,
+        COLUMN_PKTS_NOMEM = 128,
+        COLUMN_BYTES_NOMEM = 256,
         COLUMN_ALL = COLUMN_FIRST_PKT_TS
-                     | COLUMN_PKTS_ACCEPTED | COLUMN_BYTES_ACCEPTED
+                     | COLUMN_PKTS_BURSTED | COLUMN_BYTES_BURSTED
+                     | COLUMN_PKTS_QUEUED | COLUMN_BYTES_QUEUED
                      | COLUMN_PKTS_DROPPED | COLUMN_BYTES_DROPPED
                      | COLUMN_PKTS_NOMEM | COLUMN_BYTES_NOMEM
       };
@@ -1083,7 +1087,8 @@ Bucket rate: %sBps\n",
       enum column columns = COLUMN_ALL;
       enum column column_list[] = {
           COLUMN_FIRST_PKT_TS,
-          COLUMN_PKTS_ACCEPTED, COLUMN_BYTES_ACCEPTED,
+          COLUMN_PKTS_BURSTED, COLUMN_BYTES_BURSTED,
+          COLUMN_PKTS_QUEUED, COLUMN_BYTES_QUEUED,
           COLUMN_PKTS_DROPPED, COLUMN_BYTES_DROPPED,
           COLUMN_PKTS_NOMEM, COLUMN_BYTES_NOMEM
         };
@@ -1105,23 +1110,28 @@ Bucket rate: %sBps\n",
               human_readable_p = 1;
               columns = COLUMN_ALL;
               column_list[0] = COLUMN_FIRST_PKT_TS;
-              column_list[1] = COLUMN_PKTS_ACCEPTED;
-              column_list[2] = COLUMN_BYTES_ACCEPTED;
-              column_list[3] = COLUMN_PKTS_DROPPED;
-              column_list[4] = COLUMN_BYTES_DROPPED;
-              column_list[5] = COLUMN_PKTS_NOMEM;
-              column_list[6] = COLUMN_BYTES_NOMEM;
+              column_list[1] = COLUMN_PKTS_BURSTED;
+              column_list[2] = COLUMN_BYTES_BURSTED;
+              column_list[3] = COLUMN_PKTS_QUEUED;
+              column_list[4] = COLUMN_BYTES_QUEUED;
+              column_list[5] = COLUMN_PKTS_DROPPED;
+              column_list[6] = COLUMN_BYTES_DROPPED;
+              column_list[7] = COLUMN_PKTS_NOMEM;
+              column_list[8] = COLUMN_BYTES_NOMEM;
               break;
             case 'c':
               if (optarg == NULL)
                 {
                   columns = COLUMN_ALL;
                   column_list[0] = COLUMN_FIRST_PKT_TS;
-                  column_list[1] = COLUMN_PKTS_ACCEPTED;
-                  column_list[2] = COLUMN_BYTES_ACCEPTED;
-                  column_list[3] = COLUMN_PKTS_DROPPED;
-                  column_list[4] = COLUMN_BYTES_DROPPED;
-                  column_list[5] = COLUMN_PKTS_NOMEM;
+                  column_list[1] = COLUMN_PKTS_BURSTED;
+                  column_list[2] = COLUMN_BYTES_BURSTED;
+                  column_list[3] = COLUMN_PKTS_QUEUED;
+                  column_list[4] = COLUMN_BYTES_QUEUED;
+                  column_list[5] = COLUMN_PKTS_DROPPED;
+                  column_list[6] = COLUMN_BYTES_DROPPED;
+                  column_list[7] = COLUMN_PKTS_NOMEM;
+                  column_list[8] = COLUMN_BYTES_NOMEM;
                 }
               else
                 {
@@ -1142,6 +1152,8 @@ Bucket rate: %sBps\n",
                   column_list[4] = COLUMN_NONE;
                   column_list[5] = COLUMN_NONE;
                   column_list[6] = COLUMN_NONE;
+                  column_list[7] = COLUMN_NONE;
+                  column_list[8] = COLUMN_NONE;
 
                   for (i = 0; i < ARRAY_SIZE (column_list); ++ i)
                     {
@@ -1169,8 +1181,10 @@ Bucket rate: %sBps\n",
                         }
 
                       CHECK_TOKEN ("first_pkt_ts", COLUMN_FIRST_PKT_TS);
-                      CHECK_TOKEN ("pkts_accepted", COLUMN_PKTS_ACCEPTED);
-                      CHECK_TOKEN ("bytes_accepted", COLUMN_BYTES_ACCEPTED);
+                      CHECK_TOKEN ("pkts_bursted", COLUMN_PKTS_BURSTED);
+                      CHECK_TOKEN ("bytes_bursted", COLUMN_BYTES_BURSTED);
+                      CHECK_TOKEN ("pkts_queued", COLUMN_PKTS_QUEUED);
+                      CHECK_TOKEN ("bytes_queued", COLUMN_BYTES_QUEUED);
                       CHECK_TOKEN ("pkts_dropped", COLUMN_PKTS_DROPPED);
                       CHECK_TOKEN ("bytes_dropped", COLUMN_BYTES_DROPPED);
                       CHECK_TOKEN ("pkts_nomem", COLUMN_PKTS_NOMEM);
@@ -1201,14 +1215,17 @@ Bucket rate: %sBps\n",
       if (human_readable_p)
         printf ("\
 First packet timestamp: %" PRIu64 "\n\
-Packets accepted: %" PRIu64 "\n\
-Bytes accepted: %" PRIu64 "\n\
+Packets bursted: %" PRIu64 "\n\
+Bytes bursted: %" PRIu64 "\n\
+Packets queued: %" PRIu64 "\n\
+Bytes queued: %" PRIu64 "\n\
 Packets dropped: %" PRIu64 "\n\
 Bytes dropped: %" PRIu64 "\n\
 Packets dropped due to insufficient memory: %" PRIu64 "\n\
 Bytes dropped due to insufficient memoty: %" PRIu64 "\n",
                 stats.first_pkt_ts,
-                stats.pkts_accepted, stats.bytes_accepted,
+                stats.pkts_bursted, stats.bytes_bursted,
+                stats.pkts_queued, stats.bytes_queued,
                 stats.pkts_dropped, stats.bytes_dropped,
                 stats.pkts_nomem, stats.bytes_nomem);
       else
@@ -1230,11 +1247,17 @@ Bytes dropped due to insufficient memoty: %" PRIu64 "\n",
                   case COLUMN_FIRST_PKT_TS:
                     printf ("%" PRIu64, stats.first_pkt_ts);
                     break;
-                  case COLUMN_PKTS_ACCEPTED:
-                    printf ("%" PRIu64, stats.pkts_accepted);
+                  case COLUMN_PKTS_BURSTED:
+                    printf ("%" PRIu64, stats.pkts_bursted);
                     break;
-                  case COLUMN_BYTES_ACCEPTED:
-                    printf ("%" PRIu64, stats.bytes_accepted);
+                  case COLUMN_BYTES_BURSTED:
+                    printf ("%" PRIu64, stats.bytes_bursted);
+                    break;
+                  case COLUMN_PKTS_QUEUED:
+                    printf ("%" PRIu64, stats.pkts_queued);
+                    break;
+                  case COLUMN_BYTES_QUEUED:
+                    printf ("%" PRIu64, stats.bytes_queued);
                     break;
                   case COLUMN_PKTS_DROPPED:
                     printf ("%" PRIu64, stats.pkts_dropped);

@@ -15,4 +15,4 @@ ltmain.sh
 install-sh
 Makefile
 Kbuild
-xt_tbf
+nf_tbf_ctl

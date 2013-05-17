@@ -1225,8 +1225,8 @@ Packets queued: %" PRIu64 "\n\
 Bytes queued: %" PRIu64 "\n\
 Packets dropped: %" PRIu64 "\n\
 Bytes dropped: %" PRIu64 "\n\
-Packets dropped due to insufficient memory: %" PRIu64 "\n\
-Bytes dropped due to insufficient memoty: %" PRIu64 "\n",
+Packets lost: %" PRIu64 "\n\
+Bytes lost: %" PRIu64 "\n",
                 stats.first_pkt_ts,
                 stats.pkts_bursted, stats.bytes_bursted,
                 stats.pkts_queued, stats.bytes_queued,

@@ -782,7 +782,7 @@ Invalid latency `%s', an integer between 0 and 1000 expected.",
               return 1;
             }
 
-          cfg.limit = ((uint64_t) latency * cfg.rate) / 1000 + cfg.burst;
+          cfg.limit = ((uint64_t) latency * cfg.rate) / 1000;
 
           if (cfg.limit > UINT32_MAX - cfg.burst)
             {
@@ -904,7 +904,7 @@ Invalid latency `%s', an integer between 0 and 1000 expected.",
         };
 
       struct nf_tbf_cfg cfg;
-      uint64_t latency = 0;
+      uint64_t latency = 0, rem;
 
       ((const char **) argv)[0] = argv_0;
 
@@ -1003,8 +1003,12 @@ Invalid latency `%s', an integer between 0 and 1000 expected.",
       CHECK_CONFIGFS_DIR;
       READ_ATTR("cfg", cfg, 3, 4, 5);
 
-      if (cfg.rate > 0 && cfg.limit > cfg.burst)
-        latency = ((uint64_t) (cfg.limit - cfg.burst) * 1000) / cfg.rate;
+      if (cfg.rate > 0 && cfg.limit > cfg.burst) {
+        latency = (uint64_t) (cfg.limit - cfg.burst) * 1000;
+        rem = latency % cfg.rate;
+        latency /= cfg.rate;
+        latency += rem ? 1 : 0;
+      }
 
       if (human_readable_p)
         {

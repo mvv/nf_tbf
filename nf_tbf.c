@@ -27,6 +27,7 @@
 #include <linux/slab.h>
 #include <linux/time.h>
 #include <linux/hrtimer.h>
+#include <linux/interrupt.h>
 #include <linux/list.h>
 #include <linux/rbtree.h>
 #include <linux/configfs.h>
@@ -39,6 +40,8 @@
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Mikhail Vorozhtsov <mikhail.vorozhtsov@gmail.com>");
 MODULE_DESCRIPTION("Token Bucket Filter implemented as a netfilter queue");
+
+#define NF_TBF_MAX_REINJECTS 10
 
 struct nf_tbf_entry {
 	struct list_head list_node;
@@ -74,8 +77,7 @@ struct nf_tbf_bucket {
 	struct nf_tbf_entry *band2;
 	struct hrtimer timer;
 	s64 next_timer_ts;
-	s64 last_timer_ts;
-	s64 try_timer_ts;
+	struct tasklet_struct tasklet;
 	struct config_item cfg_item;
 };
 
@@ -117,47 +119,55 @@ static struct nf_tbf_bucket *nf_tbf_bucket_get(u16 bucket_id)
 
 static void nf_tbf_bucket_put(struct nf_tbf_bucket *bucket)
 {
-	struct nf_tbf_entry *temp_entry;
-	struct nf_tbf_entry *entry;
+	struct nf_tbf_entry *bucket_entry;
+	struct nf_tbf_entry *tmp_entry;
 
 	if (atomic_dec_return(&bucket->ref_cnt))
 		return;
 
+	tasklet_disable(&bucket->tasklet);
 	hrtimer_cancel(&bucket->timer);
+	tasklet_disable(&bucket->tasklet);
 
-	if (bucket->band2)
-		list_for_each_entry_safe(entry, temp_entry,
-					 &bucket->band2->list_node,
-					 list_node) {
-			nf_reinject(entry->entry, NF_DROP);
-			kfree(entry);
-		}
-	if (bucket->band1)
-		list_for_each_entry_safe(entry, temp_entry,
-					 &bucket->band1->list_node,
-					 list_node) {
-			nf_reinject(entry->entry, NF_DROP);
-			kfree(entry);
-		}
-	if (bucket->band0)
-		list_for_each_entry_safe(entry, temp_entry,
+	if (bucket->band0) {
+		list_for_each_entry_safe(bucket_entry, tmp_entry,
 					 &bucket->band0->list_node,
 					 list_node) {
-			nf_reinject(entry->entry, NF_DROP);
-			kfree(entry);
+			nf_reinject(bucket_entry->entry, NF_ACCEPT);
+			kfree(bucket_entry);
 		}
+		nf_reinject(bucket->band0->entry, NF_ACCEPT);
+		kfree(bucket->band0);
+	}
+	if (bucket->band1) {
+		list_for_each_entry_safe(bucket_entry, tmp_entry,
+					 &bucket->band1->list_node,
+					 list_node) {
+			nf_reinject(bucket_entry->entry, NF_ACCEPT);
+			kfree(bucket_entry);
+		}
+		nf_reinject(bucket->band1->entry, NF_ACCEPT);
+		kfree(bucket->band1);
+	}
+	if (bucket->band2) {
+		list_for_each_entry_safe(bucket_entry, tmp_entry,
+					 &bucket->band2->list_node,
+					 list_node) {
+			nf_reinject(bucket_entry->entry, NF_ACCEPT);
+			kfree(bucket_entry);
+		}
+		nf_reinject(bucket->band2->entry, NF_ACCEPT);
+		kfree(bucket->band2);
+	}
 
 	kfree(bucket);
 }
 
-static s64 nf_tbf_bucket_burst(struct nf_tbf_bucket *bucket,
+static s64 nf_tbf_bucket_burst(struct nf_tbf_bucket *bucket, s64 now,
 			       struct nf_queue_entry *entry, u32 size)
 {
-	s64 now;
-	s64 tokens;
+	s64 tokens = now - bucket->last_pkt_ts;
 
-	now = ktime_to_ns(ktime_get());
-	tokens = now - bucket->last_pkt_ts;
 	if (tokens < bucket->burst_tokens) {
 		tokens += bucket->tokens_left;
 		if (tokens > bucket->burst_tokens)
@@ -182,10 +192,9 @@ static s64 nf_tbf_bucket_burst(struct nf_tbf_bucket *bucket,
 static int nf_tbf_handle(struct nf_queue_entry *entry, unsigned int qn)
 {
 	u32 size;
+	s64 now;
 	s64 ns = 0;
 	bool try_to_burst;
-	bool started_timer;
-	bool force_timer_start;
 	struct nf_tbf_entry **band;
 	struct nf_tbf_entry *bucket_entry;
 	struct nf_tbf_bucket *bucket = nf_tbf_bucket_get((u16) qn);
@@ -245,7 +254,8 @@ static int nf_tbf_handle(struct nf_queue_entry *entry, unsigned int qn)
 	}
 
 	if (try_to_burst) {
-		ns = nf_tbf_bucket_burst(bucket, entry, size);
+		now = ktime_to_ns(ktime_get());
+		ns = nf_tbf_bucket_burst(bucket, now, entry, size);
 
 		if (ns == 0) {
 			spin_unlock_bh(&bucket->lock);
@@ -297,51 +307,15 @@ static int nf_tbf_handle(struct nf_queue_entry *entry, unsigned int qn)
 		return 0;
 	}
 
-	force_timer_start = false;
-
-	if (bucket->next_timer_ts == bucket->last_timer_ts) {
-		if (bucket->try_timer_ts) {
-			if (ns < bucket->try_timer_ts)
-				bucket->try_timer_ts = ns;
-		} else {
-			started_timer = !hrtimer_start(&bucket->timer,
-						       ns_to_ktime(ns),
-						       HRTIMER_MODE_ABS);
-			if (started_timer) {
-				bucket->next_timer_ts = ns;
-				bucket->last_timer_ts = 0;
-			} else if (bucket->enqueued_bytes == size) {
-				force_timer_start = true;
-				bucket->try_timer_ts = ns;
-			}
-		}
+	if (bucket->next_timer_ts == 0) {
+		bucket->next_timer_ts = ns;
+		hrtimer_start(&bucket->timer, ns_to_ktime(ns),
+			      HRTIMER_MODE_ABS);
 	} else if (bucket->next_timer_ts > ns) {
-		if (hrtimer_try_to_cancel(&bucket->timer) >= 0) {
+		if (hrtimer_try_to_cancel(&bucket->timer) == 1) {
 			bucket->next_timer_ts = ns;
-			bucket->last_timer_ts = 0;
 			hrtimer_start(&bucket->timer, ns_to_ktime(ns),
 				      HRTIMER_MODE_ABS);
-		}
-	}
-
-	while (force_timer_start) {
-		spin_unlock_bh(&bucket->lock);
-		cpu_relax();
-		spin_lock_bh(&bucket->lock);
-
-		if (!bucket->try_timer_ts)
-			break;
-
-		ns = bucket->try_timer_ts;
-		started_timer = !hrtimer_start(&bucket->timer,
-					       ns_to_ktime(ns),
-					       HRTIMER_MODE_ABS);
-
-		if (started_timer) {
-			bucket->next_timer_ts = ns;
-			bucket->last_timer_ts = 0;
-			bucket->try_timer_ts = 0;
-			break;
 		}
 	}
 
@@ -350,30 +324,27 @@ static int nf_tbf_handle(struct nf_queue_entry *entry, unsigned int qn)
 	return 0;
 }
 
-static enum hrtimer_restart nf_tbf_bucket_watchdog(struct hrtimer *timer) {
-	struct nf_tbf_bucket *bucket =
-		container_of(timer, struct nf_tbf_bucket, timer);
+static void nf_tbf_bucket_dequeue(unsigned long data) {
+	struct nf_tbf_bucket *bucket = (struct nf_tbf_bucket *) data;
 	struct nf_tbf_entry **band;
 	struct nf_tbf_entry *bucket_entry;
+	struct nf_tbf_entry *tmp_entry;
 	struct nf_tbf_entry *new_band;
-	struct nf_queue_entry *entry;
+	struct nf_tbf_entry *to_reinject = NULL;
 	u32 size;
-	s64 ns;
-	bool bands_are_empty;
- 
-	do {
-		if (atomic_read(&bucket->ref_cnt) == 0)
-			return HRTIMER_NORESTART;
+	s64 now;
+	s64 ns = 0;
+	unsigned int i = 0;
 
-		spin_lock(&bucket->lock);
+	if (atomic_read(&bucket->ref_cnt) == 0)
+		return;
 
-		bucket->last_timer_ts = bucket->next_timer_ts;
+	spin_lock(&bucket->lock);
 
-		if (bucket->enqueued_bytes == 0) {
-			spin_unlock(&bucket->lock);
-			break;
-		}
+	now = ktime_to_ns(ktime_get());
+	bucket->next_timer_ts = 0;
 
+	for (; bucket->enqueued_bytes > 0 && i < NF_TBF_MAX_REINJECTS; ++i) {
 		if (bucket->band0)
 			band = &bucket->band0;
 		else if (bucket->band1)
@@ -382,16 +353,15 @@ static enum hrtimer_restart nf_tbf_bucket_watchdog(struct hrtimer *timer) {
 			band = &bucket->band2;
 
 		bucket_entry = *band;
-		entry = bucket_entry->entry;
 		size = bucket_entry->size;
-		ns = nf_tbf_bucket_burst(bucket, entry, size);
+		ns = nf_tbf_bucket_burst(bucket, now, bucket_entry->entry,
+					 size);
 
 		if (ns > 0) {
-			bucket->next_timer_ts = ns;
-			bucket->last_timer_ts = 0;
-			hrtimer_set_expires(timer, ns_to_ktime(ns));
-		        spin_unlock(&bucket->lock);
-			return HRTIMER_RESTART;
+		        bucket->next_timer_ts = ns;
+		        hrtimer_start(&bucket->timer, ns_to_ktime(ns),
+		                      HRTIMER_MODE_ABS);
+			break;
 		}
 
 		new_band = container_of(bucket_entry->list_node.next,
@@ -404,17 +374,38 @@ static enum hrtimer_restart nf_tbf_bucket_watchdog(struct hrtimer *timer) {
 
 		*band = new_band;
 		bucket->enqueued_bytes -= size;
-		bands_are_empty = bucket->enqueued_bytes == 0;
 
-		spin_unlock(&bucket->lock);
+		if (to_reinject)
+			list_add_tail(&bucket_entry->list_node,
+				      &to_reinject->list_node);
+		else {
+			INIT_LIST_HEAD(&bucket_entry->list_node);
+			to_reinject = bucket_entry;
+		}
+	}
 
-		kfree(bucket_entry);
-		nf_reinject(entry, NF_ACCEPT);
+	spin_unlock(&bucket->lock);
 
-		if (bands_are_empty)
-			break;
-	} while (1);
+	if (to_reinject) {
+		list_for_each_entry_safe(bucket_entry, tmp_entry,
+					 &to_reinject->list_node,
+					 list_node) {
+			nf_reinject(bucket_entry->entry, NF_ACCEPT);
+			kfree(bucket_entry);
+		}
+		nf_reinject(to_reinject->entry, NF_ACCEPT);
+		kfree(to_reinject);
+	}
 
+	if (i == NF_TBF_MAX_REINJECTS)
+		tasklet_hi_schedule(&bucket->tasklet);
+}
+
+static enum hrtimer_restart nf_tbf_bucket_timer_fn(struct hrtimer *timer) {
+	struct nf_tbf_bucket *bucket =
+		container_of(timer, struct nf_tbf_bucket, timer);
+	if (atomic_read(&bucket->ref_cnt))
+		tasklet_hi_schedule(&bucket->tasklet);
 	return HRTIMER_NORESTART;
 }
 
@@ -590,7 +581,9 @@ static struct config_item *nf_tbf_cfg_bucket_create(
 	config_item_init_type_name(&bucket->cfg_item, name,
 				   &nf_tbf_cfg_bucket_item_type);
 	hrtimer_init(&bucket->timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
-	bucket->timer.function = nf_tbf_bucket_watchdog;
+	bucket->timer.function = nf_tbf_bucket_timer_fn;
+	tasklet_init(&bucket->tasklet, nf_tbf_bucket_dequeue,
+		     (unsigned long) bucket);
 
 	write_lock_bh(&buckets_lock);
 

@@ -417,11 +417,19 @@ static enum hrtimer_restart nf_tbf_bucket_timer_fn(struct hrtimer *timer) {
 static ssize_t show_cfg(struct nf_tbf_bucket *bucket, char *buf)
 {
 	struct nf_tbf_cfg cfg;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
+	struct tc_ratespec rs;
+#endif
 
 	spin_lock_bh(&bucket->lock);
 	cfg.limit = bucket->max_enqueued_bytes;
 	cfg.burst = bucket->burst;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0)
 	cfg.rate  = psched_ratecfg_getrate(&bucket->rate);
+#else
+	psched_ratecfg_getrate(&rs, &bucket->rate);
+	cfg.rate = rs.rate;
+#endif
 	spin_unlock_bh(&bucket->lock);
 
 	memcpy(buf, &cfg, sizeof(cfg));
@@ -432,6 +440,9 @@ static ssize_t store_cfg(struct nf_tbf_bucket *bucket, const char *buf,
 			 size_t size)
 {
 	struct nf_tbf_cfg cfg;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
+	struct tc_ratespec rs;
+#endif
 
 	if (size != sizeof(cfg))
 		return -EINVAL;
@@ -445,7 +456,17 @@ static ssize_t store_cfg(struct nf_tbf_bucket *bucket, const char *buf,
 	spin_lock_bh(&bucket->lock);
 	bucket->max_enqueued_bytes = cfg.limit;
 	bucket->burst = cfg.burst;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0)
 	psched_ratecfg_precompute(&bucket->rate, cfg.rate);
+#else
+	memset(&rs, 0, sizeof(rs));
+	rs.rate = cfg.rate;
+# if LINUX_VERSION_CODE < KERNEL_VERSION(3, 13, 0)
+	psched_ratecfg_precompute(&bucket->rate, &rs);
+# else
+	psched_ratecfg_precompute(&bucket->rate, &rs, 0);
+# endif
+#endif
 	bucket->burst_tokens = (s64) psched_l2t_ns(&bucket->rate, cfg.burst);
 	bucket->last_pkt_ts = 0;
 	bucket->tokens_left = bucket->burst_tokens;

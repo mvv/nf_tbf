@@ -22,7 +22,11 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 
-#include <linux/atomic.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 37)
+# include <linux/atomic.h>
+#else
+# include <asm/atomic.h>
+#endif
 #include <linux/spinlock.h>
 #include <linux/slab.h>
 #include <linux/time.h>
@@ -32,7 +36,7 @@
 #include <linux/rbtree.h>
 #include <linux/configfs.h>
 
-#include <net/pkt_sched.h>
+#include <net/sch_generic.h>
 #include <net/netfilter/nf_queue.h>
 
 #include "nf_tbf.h"
@@ -40,6 +44,63 @@
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Mikhail Vorozhtsov <mikhail.vorozhtsov@gmail.com>");
 MODULE_DESCRIPTION("Token Bucket Filter implemented as a netfilter queue");
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 9, 0)
+/*
+ * Copied from the kernel version 3.9
+ */
+struct psched_ratecfg {
+	u64 rate_bps;
+	u32 mult;
+	u32 shift;
+};
+
+static inline u64 psched_l2t_ns(const struct psched_ratecfg *r,
+				unsigned int len)
+{
+	return ((u64)len * r->mult) >> r->shift;
+}
+
+static inline u32 psched_ratecfg_getrate(const struct psched_ratecfg *r)
+{
+	return r->rate_bps >> 3;
+}
+
+static void psched_ratecfg_precompute(struct psched_ratecfg *r, u32 rate)
+{
+	u64 factor;
+	u64 mult;
+	int shift;
+
+	r->rate_bps = (u64)rate << 3;
+	r->shift = 0;
+	r->mult = 1;
+	/*
+	 * Calibrate mult, shift so that token counting is accurate
+	 * for smallest packet size (64 bytes).  Token (time in ns) is
+	 * computed as (bytes * 8) * NSEC_PER_SEC / rate_bps.  It will
+	 * work as long as the smallest packet transfer time can be
+	 * accurately represented in nanosec.
+	 */
+	if (r->rate_bps > 0) {
+		/*
+		 * Higher shift gives better accuracy.  Find the largest
+		 * shift such that mult fits in 32 bits.
+		 */
+		for (shift = 0; shift < 16; shift++) {
+			r->shift = shift;
+			factor = 8LLU * NSEC_PER_SEC * (1 << r->shift);
+			mult = div64_u64(factor, r->rate_bps);
+			if (mult > UINT_MAX)
+				break;
+		}
+
+		r->shift = shift - 1;
+		factor = 8LLU * NSEC_PER_SEC * (1 << r->shift);
+		r->mult = div64_u64(factor, r->rate_bps);
+	}
+}
+#endif
 
 #define NF_TBF_MAX_REINJECTS 10
 
@@ -660,14 +721,33 @@ static int __init nf_tbf_init(void)
 {
 	int ret;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
 	nf_register_queue_handler(&nf_tbf_queue_handler);
+#else
+	ret = nf_register_queue_handler(NFPROTO_IPV4, &nf_tbf_queue_handler);
+	if (ret != 0)
+		return ret;
+	ret = nf_register_queue_handler(NFPROTO_IPV6, &nf_tbf_queue_handler);
+	if (ret != 0) {
+		nf_unregister_queue_handler(NFPROTO_IPV4,
+					    &nf_tbf_queue_handler);
+		return ret;
+	}
+#endif
 
 	config_group_init(&nf_tbf_cfg_subsys.su_group);
 	mutex_init(&nf_tbf_cfg_subsys.su_mutex);
 	ret = configfs_register_subsystem(&nf_tbf_cfg_subsys);
 
 	if (ret != 0) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
 		nf_unregister_queue_handler();
+#else
+		nf_unregister_queue_handler(NFPROTO_IPV6,
+					    &nf_tbf_queue_handler);
+		nf_unregister_queue_handler(NFPROTO_IPV4,
+					    &nf_tbf_queue_handler);
+#endif
 		return ret;
 	}
 
@@ -677,7 +757,12 @@ static int __init nf_tbf_init(void)
 static void __exit nf_tbf_exit(void)
 {
 	configfs_unregister_subsystem(&nf_tbf_cfg_subsys);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
 	nf_unregister_queue_handler();
+#else
+	nf_unregister_queue_handler(NFPROTO_IPV6, &nf_tbf_queue_handler);
+	nf_unregister_queue_handler(NFPROTO_IPV4, &nf_tbf_queue_handler);
+#endif
 }
 
 module_init(nf_tbf_init);

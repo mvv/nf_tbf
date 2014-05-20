@@ -3,6 +3,7 @@
 *.mod.c
 *.o
 *.ko
+*.ko.unsigned
 *.so
 modules.order
 Module.markers
